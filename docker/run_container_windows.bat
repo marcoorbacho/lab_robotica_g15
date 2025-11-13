@@ -9,4 +9,5 @@ docker run -it ^
 lab_rob_image ^
 bash
 
-docker rm lab_rob_container
+:: COMANDO PARA PODER EJECUTAR 2 CONTENEDORES O MAS A LA VEZ EN OTRO TERMINAL
+:: docker exec -it lab_rob_container bash
