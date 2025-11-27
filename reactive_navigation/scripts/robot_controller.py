@@ -51,6 +51,39 @@ class TurtlebotController():
             rospy.loginfo("Goal not received. Waiting...")
             return
 
+        if(self.goal_received == True):
+            rospy.loginfo("Goal received!! Moving...")
+            linear = 0.0
+            angular = 0.0
+            # Moverse hacia el goal el orientación correcta
+                
+            try:
+                goal = PointStamped()
+                base_goal = PoseStamped()
+                listener = tf.TransformListener()
+                listener.transformPoint('base_link', goal, base_goal)
+
+                angle=math.atan2(base_goal.pose.position.y, base_goal.pose.position.x)
+                if angle>0.1:
+                    linear=0.0
+                    angular=0.9
+
+                elif angle<-0.1:
+                    linear=0.0
+                    angular=-0.9
+
+                else:
+                    linear=0.2
+                    angular=0.0
+
+                #Mandar velocidades
+                self.publish(linear,angular)
+
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                rospy.loginfo("Problem TF")
+                return False
+
+            return
         # Check if the final goal has been reached
         if(self.goalReached()==True):
             rospy.loginfo("GOAL REACHED!!! Stopping!")

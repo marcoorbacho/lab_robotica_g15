@@ -17,7 +17,7 @@
     
     <!-- Launch RViz -->
 	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find autonomous_navigation)/config/challenge_reactive.rviz"/>
-
+    <node name="robot_controller" pkg="reactive_navigation" type="robot_controller.py" output="screen"/>
 </launch>
 
 
