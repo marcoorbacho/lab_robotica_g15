@@ -11,3 +11,5 @@ bash
 
 :: COMANDO PARA PODER EJECUTAR 2 CONTENEDORES O MAS A LA VEZ EN OTRO TERMINAL
 :: docker exec -it lab_rob_container bash
+
+:: primero dentro de catkin_ws hacer source devel/setup.bash y catkin_make, si no funciona, hacerlo alreves LANZAR ROSCORE ANTES
