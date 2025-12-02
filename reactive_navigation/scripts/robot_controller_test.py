@@ -8,6 +8,26 @@ from geometry_msgs.msg import Twist
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PointStamped
+import numpy as np
+
+angulo_seg_delantero = 45 
+dist_peligrosa = 0.5 
+zona_muerta = 5
+
+# Constantes de Control Proporcional
+# Kp para el giro hacia el objetivo 
+obj_kp = 1.5 
+# Velocidad lineal máxima de avance 
+max_linear_speed = 0.5 
+# Velocidad angular máxima para giro 
+max_angular_speed = 1.2
+# Umbral de ángulo para considerar que estamos alineados (en radianes, ~3 grados)
+tolerancia_alineada = np.radians(3)
+
+class Obstacle:
+    def __init__(self):
+        self.angle = 0.0
+        self.distance = 0.0 
 
 class TurtlebotController():
     
@@ -71,27 +91,45 @@ class TurtlebotController():
                 angle=math.atan2(base_goal.pose.position.y, base_goal.pose.position.x)
                 
                 #Extraer datos del lidar
-                colision=self.Obstaculo_delante_dir_wp()   
+                colision = self.find_closest_obstacle(angulo_seg_delantero, zona_muerta)  
+                linear = 0.0
+                angular = 0.0        
+
                 if colision.angle==0.0 and colision.distance==0.0:
                     return False
-                if colision.distance>0.0 and colision.distance<0.5 and colision.dist_objetivo<0.5:
-                    linear=0.2
-                    if colision.angle>=0.0:
-                        angular=-0.5
-                    else:
-                        angular=0.5 
+                if colision.distance>0.0 and colision.distance<dist_peligrosa:
+                   # Factor Proporcional basado en la distancia (más cerca = factor mayor)
+                    # Usamos una función inversa suave para evitar divisiones por cero y límites bruscos
+                    safety_factor = max(0.0, (dist_peligrosa - colision.distance) / dist_peligrosa)
+                    turn_direction = -1.0 if colision.angle >= 0.0 else 1.0
+                
+                    # Velocidad angular de evasión, limitada por la velocidad máxima
+                    angular = turn_direction * safety_factor * max_angular_speed
+                    angular = max(-max_angular_speed, min(max_angular_speed, angular))
+
+                    # Reducción de la velocidad lineal para maniobras seguras
+                    # Si está muy cerca (menor que dist_peligrosa), la velocidad es muy baja
+                    linear = min(max_linear_speed, colision.distance * max_linear_speed)
+
+                    if linear < 0.1:
+                        linear = 0.0  # Detenerse si está demasiado cerca
                 else:
-                    if angle>0.05:
-                        linear=0.0
-                        angular=0.5
+                    # Girar si el ángulo al objetivo es grande
+                    # Usamos control P para que el giro sea más suave cerca del objetivo (angle -> 0)
+                    angular = -obj_kp * colision.angle 
+                    
+                    # Limitamos la velocidad angular
+                    angular = max(-max_angular_speed, min(max_angular_speed, angular))
 
-                    elif angle<-0.05:
-                        linear=0.0
-                        angular=-0.5
-
+                    # Si el robot está razonablemente alineado, avanzamos
+                    if abs(colision.angle) < 0.1: # umbral de 0.1 radianes
+                        linear = max_linear_speed
                     else:
-                        linear=0.4
-                        angular=0.0
+                        # Reducimos la velocidad lineal para dar prioridad al giro de realineación
+                        linear = max_linear_speed * (1.0 - abs(angular) / max_angular_speed)
+                        linear = max(0.0, min(max_linear_speed, linear))
+
+
                 #Mandar velocidades
                 self.publish(linear,angular)
 
@@ -117,14 +155,82 @@ class TurtlebotController():
         # Publish velocity command
         self.publish(linear,angular)
         return False
-
+    
 
     # Recoger datos del LIDAR
     def Datos_lidar(self, dato):
         self.scan_data = dato  
 
+    def find_closest_obstacle(self, fov_degrees: float, dead_zone_degrees: float) -> Obstacle:
+
+        obstaculo = Obstacle()
+
+        if self.scan_data is None:
+            return obstaculo
+
+        lidar_ranges = np.array(self.scan_data.ranges)
+        num_points = len(lidar_ranges)
+        angle_increment = self.scan_data.angle_increment
+        
+        points_per_side = int(fov_degrees / np.degrees(angle_increment))
+        dead_points = int(dead_zone_degrees / np.degrees(angle_increment))
+        
+        # Indices frontales: [0 a points_per_side] y [num_points - points_per_side a num_points - 1]
+        front_indices = np.concatenate([
+            np.arange(points_per_side), 
+            np.arange(num_points - points_per_side, num_points)
+        ])
+        
+        # Indices de la zona muerta a excluir
+        dead_zone_indices = np.concatenate([
+            np.arange(dead_points), 
+            np.arange(num_points - dead_points, num_points)
+        ])
+        
+        # Indices de búsqueda: FOV frontal, excluyendo la zona muerta
+        search_indices = np.setdiff1d(front_indices, dead_zone_indices)         #Excluye los indices repetidos
+        
+        if search_indices.size == 0:
+            return obstaculo
+
+        # 2. Encontrar la distancia mínima
+        # Reemplazar np.inf y valores fuera de rango por un valor grande para la comparación
+        lidar_search_values = lidar_ranges[search_indices].copy()
+        
+        # Asegurarse de que los valores inválidos (inf, nan) no causen problemas
+        lidar_search_values[~np.isfinite(lidar_search_values)] = 100.0 
+
+        min_distance = np.min(lidar_search_values)
+
+        # 3. Calcular el ángulo del obstáculo más cercano
+        if min_distance > 0.0 and min_distance < dist_peligrosa + 0.5: # Considerar distancias razonables
+            
+            min_index_relative = np.argmin(lidar_search_values)
+            min_index_absolute = search_indices[min_index_relative]
+            
+            # Mapeo de índice a ángulo en radianes
+            # El ángulo 0 es al frente. Indices crecientes (0->180) son Izquierda (positivo).
+            if min_index_absolute < num_points / 2:
+                # Ángulo positivo (izquierda)
+                angle_degrees = min_index_absolute
+            else:
+                # Ángulo negativo (derecha)
+                angle_degrees = min_index_absolute - num_points
+                
+            obstaculo.angle = np.radians(angle_degrees)
+            obstaculo.distance = min_distance
+            
+        return obstaculo
+    
     # Detectar obstáculo en una ventana de 15 grados y mandar el dato más próximo
-    def Obstaculo_delante_dir_wp(self,angle,obstaculo):
+    def Obstaculo_delante_dir_wp(self,angle):
+        class Obstacle:
+            def __init__(self):
+                self.angle = 0.0
+                self.distance = 0.0
+                self.dist_objetivo = 0.0
+        obstaculo = Obstacle()
+        
         obstaculo.angle = 0.0
         obstaculo.distance = 0.0
         obstaculo.dist_objetivo = 0.0
