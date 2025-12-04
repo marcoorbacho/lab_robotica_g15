@@ -37,10 +37,11 @@ class TurtlebotController():
         
         # Read parameters
         self.goal_tol = 0.15
+        self.inicio=0
 
         #parametros cooldown evasion
         self.cooldown_activo=False
-        self.duracion_cooldown=2.0
+        self.duracion_cooldown=1.0
         self.cooldown_empezar=rospy.Time.now()
         self.evading_direction=0.0
         
@@ -106,60 +107,68 @@ class TurtlebotController():
 
                 if self.cooldown_activo and (rospy.Time.now() - self.cooldown_empezar).to_sec() > self.duracion_cooldown:
                     self.cooldown_activo = False # Termina el periodo de giro forzado
-                    rospy.loginfo("Cooldown de evasión terminado.")     
+                    rospy.loginfo("Cooldown de evasión terminado.")     
 
-                if colision.distance>0.0 and colision.distance<dist_peligrosa:
-                    if not self.cooldown_activo:
-                        # Guardar la dirección de giro que se ha decidido (derecha o izquierda)
-                        self.evading_direction = -1.0 if colision.angle >= 0.0 else 1.0
-                        self.cooldown_activo = True
-                        self.cooldown_empezar = rospy.Time.now()
-
-                        # Factor Proporcional basado en la distancia (más cerca = factor mayor)
-                        # Usamos una función inversa suave para evitar divisiones por cero y límites bruscos
-                        safety_factor = max(0.0, (dist_peligrosa - colision.distance) / dist_peligrosa)
-                        turn_direction = -1.0 if colision.angle >= 0.0 else 1.0
-                    
-                        # Velocidad angular de evasión, limitada por la velocidad máxima
-                        angular = turn_direction * safety_factor * max_angular_speed
-                        angular = max(-max_angular_speed, min(max_angular_speed, angular))
-
-                        # Reducción de la velocidad lineal para maniobras seguras
-                        # Si está muy cerca (menor que dist_peligrosa), la velocidad es muy baja
-                        linear = min(max_linear_speed, (colision.distance)/2 * max_linear_speed)
-
-                        if linear < 0.05:
-                            linear = 0.0  # Detenerse si está demasiado cerca
-
-                    elif self.cooldown_activo:
-                        rospy.loginfo("Cooldown de evasión activo: Giro sostenido.")
-                        # Fuerza al robot a continuar el giro en la última dirección determinada
-                        
-                        # Velocidad angular constante para un giro rápido y sostenido
-                        angular = self.evading_direction * max_angular_speed 
-                        
-                        # Permite un avance lento mientras gira
-                        linear = 0.1
-                else:
-                    # Girar si el ángulo al objetivo es grande
-                    # Usamos control P para que el giro sea más suave cerca del objetivo (angle -> 0)
+                if self.inicio==0:
                     angular = obj_kp * angle 
-
-                   
                     
                     # Limitamos la velocidad angular
                     angular = max(-max_angular_speed, min(max_angular_speed, angular))
+                    self.inicio=1
 
-                    # Si el robot está razonablemente alineado, avanzamos
-                    if abs(angle) < 0.1: # umbral de 0.1 radianes
-                         # Kp * distancia para frenado proporcional
-                        linear = dist_kp * distancia 
-                        linear = min(linear , max_linear_speed)
-                    # Saturación
+                else:
+                    if colision.distance>0.0 and colision.distance<dist_peligrosa and colision.distance < distancia:
+                        if not self.cooldown_activo:
+                            # Guardar la dirección de giro que se ha decidido (derecha o izquierda)
+                            self.evading_direction = -1.0 if colision.angle >= 0.0 else 1.0
+                            self.cooldown_activo = True
+                            self.cooldown_empezar = rospy.Time.now()
+
+                            # Factor Proporcional basado en la distancia (más cerca = factor mayor)
+                            # Usamos una función inversa suave para evitar divisiones por cero y límites bruscos
+                            safety_factor = max(0.0, (dist_peligrosa - colision.distance) / dist_peligrosa)
+                            turn_direction = -1.0 if colision.angle >= 0.0 else 1.0
+                        
+                            # Velocidad angular de evasión, limitada por la velocidad máxima
+                            angular = turn_direction * safety_factor * max_angular_speed
+                            angular = max(-max_angular_speed, min(max_angular_speed, angular))
+
+                            # Reducción de la velocidad lineal para maniobras seguras
+                            # Si está muy cerca (menor que dist_peligrosa), la velocidad es muy baja
+                            linear = min(max_linear_speed, 3*(colision.distance)/4 * max_linear_speed)
+
+                            if linear < 0.1:
+                                linear = 0.0  # Detenerse si está demasiado cerca
+
+                        elif self.cooldown_activo:
+                            rospy.loginfo("Cooldown de evasión activo: Giro sostenido.")
+                            # Fuerza al robot a continuar el giro en la última dirección determinada
+                            
+                            # Velocidad angular constante para un giro rápido y sostenido
+                            angular = self.evading_direction * max_angular_speed 
+                            
+                            # Permite un avance lento mientras gira
+                            linear = 0.2
                     else:
-                        # Reducimos la velocidad lineal para dar prioridad al giro de realineación
-                        linear = max_linear_speed * (1.0 - abs(angular) / max_angular_speed)
-                        linear = max(0.0, min(max_linear_speed, linear))
+                        # Girar si el ángulo al objetivo es grande
+                        # Usamos control P para que el giro sea más suave cerca del objetivo (angle -> 0)
+                        angular = obj_kp * angle 
+
+                        
+                        
+                        # Limitamos la velocidad angular
+                        angular = max(-max_angular_speed, min(max_angular_speed, angular))
+
+                        # Si el robot está razonablemente alineado, avanzamos
+                        if abs(angle) < 0.1: # umbral de 0.1 radianes
+                                # Kp * distancia para frenado proporcional
+                            linear = dist_kp * distancia 
+                            linear = min(linear , max_linear_speed)
+                        # Saturación
+                        else:
+                            # Reducimos la velocidad lineal para dar prioridad al giro de realineación
+                            linear = max_linear_speed * (1.0 - abs(angular) / max_angular_speed)
+                            linear = max(0.0, min(max_linear_speed, linear))
 
 
                 #Mandar velocidades
@@ -174,6 +183,7 @@ class TurtlebotController():
             rospy.loginfo("GOAL REACHED!!! Stopping!")
             self.publish(0.0, 0.0)
             self.goal_received = False
+            self.inicio=0
             return
         return 
         
