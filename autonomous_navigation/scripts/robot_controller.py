@@ -10,21 +10,21 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PointStamped
 import numpy as np
 
-angulo_seg_delantero = 45 
-dist_peligrosa = 0.5 
+angulo_seg_delantero = 40
+dist_peligrosa = 0.7 
 zona_muerta = 5
 
 # Constantes de Control Proporcional
 # Kp para el giro hacia el objetivo 
-obj_kp = 1.5 
+obj_kp = 3.0 
 #kp para el frenado del objetivo
-dist_kp=1.0
+dist_kp=0.8
 # Velocidad lineal máxima de avance 
-max_linear_speed = 0.5 
+max_linear_speed = 0.7 
 # Velocidad angular máxima para giro 
-max_angular_speed = 1.2
+max_angular_speed = 0.95
 # Umbral de ángulo para considerar que estamos alineados (en radianes, ~3 grados)
-tolerancia_alineada = np.radians(3)
+tolerancia_alineada = np.radians(10)
 
 class Obstacle:
     def __init__(self):
@@ -41,7 +41,7 @@ class TurtlebotController():
 
         #parametros cooldown evasion
         self.cooldown_activo=False
-        self.duracion_cooldown=1.0
+        self.duracion_cooldown=0.35
         self.cooldown_empezar=rospy.Time.now()
         self.evading_direction=0.0
         
@@ -110,11 +110,13 @@ class TurtlebotController():
                     rospy.loginfo("Cooldown de evasión terminado.")     
 
                 if self.inicio==0:
-                    angular = obj_kp * angle 
-                    
+                    angular = obj_kp**2 * angle
+                    linear= 0.0
                     # Limitamos la velocidad angular
+                    if abs(angle)<tolerancia_alineada:
+                        self.inicio=1
+
                     angular = max(-max_angular_speed, min(max_angular_speed, angular))
-                    self.inicio=1
 
                 else:
                     if colision.distance>0.0 and colision.distance<dist_peligrosa and colision.distance < distancia:
@@ -135,7 +137,7 @@ class TurtlebotController():
 
                             # Reducción de la velocidad lineal para maniobras seguras
                             # Si está muy cerca (menor que dist_peligrosa), la velocidad es muy baja
-                            linear = min(max_linear_speed, 3*(colision.distance)/4 * max_linear_speed)
+                            linear = min(max_linear_speed, (colision.distance) * max_linear_speed)
 
                             if linear < 0.1:
                                 linear = 0.0  # Detenerse si está demasiado cerca
@@ -148,27 +150,23 @@ class TurtlebotController():
                             angular = self.evading_direction * max_angular_speed 
                             
                             # Permite un avance lento mientras gira
-                            linear = 0.2
+                            linear = min(max_linear_speed, (colision.distance)/2 * max_linear_speed)
                     else:
                         # Girar si el ángulo al objetivo es grande
                         # Usamos control P para que el giro sea más suave cerca del objetivo (angle -> 0)
                         angular = obj_kp * angle 
-
-                        
-                        
                         # Limitamos la velocidad angular
                         angular = max(-max_angular_speed, min(max_angular_speed, angular))
-
+                        linear=max_linear_speed * distancia
+                        linear = max(max_linear_speed, linear)
                         # Si el robot está razonablemente alineado, avanzamos
                         if abs(angle) < 0.1: # umbral de 0.1 radianes
                                 # Kp * distancia para frenado proporcional
-                            linear = dist_kp * distancia 
-                            linear = min(linear , max_linear_speed)
+                            angular =0.0
                         # Saturación
                         else:
                             # Reducimos la velocidad lineal para dar prioridad al giro de realineación
-                            linear = max_linear_speed * (1.0 - abs(angular) / max_angular_speed)
-                            linear = max(0.0, min(max_linear_speed, linear))
+                            linear = max_linear_speed/2
 
 
                 #Mandar velocidades
