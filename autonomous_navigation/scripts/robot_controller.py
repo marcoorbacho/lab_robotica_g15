@@ -22,7 +22,7 @@ dist_kp=0.8
 # Velocidad lineal máxima de avance 
 max_linear_speed = 0.7 
 # Velocidad angular máxima para giro 
-max_angular_speed = 0.95
+max_angular_speed = 1.2
 # Umbral de ángulo para considerar que estamos alineados (en radianes, ~3 grados)
 tolerancia_alineada = np.radians(10)
 
@@ -77,6 +77,7 @@ class TurtlebotController():
         rospy.loginfo("Goal received! x: %.2f, y:%.2f", goal.pose.position.x, goal.pose.position.y)
         self.goal = goal  
         self.goal_received = True
+        self.inicio=0
 
 
     def command(self):
@@ -102,6 +103,8 @@ class TurtlebotController():
                 
                 #Extraer datos del lidar
                 colision = self.find_closest_obstacle(angulo_seg_delantero, zona_muerta)  
+                rospy.loginfo("Datos de obstaculo, %.2f, %.2f", colision.angle, colision.distance)
+
                 linear = 0.0
                 angular = 0.0   
 
@@ -202,65 +205,60 @@ class TurtlebotController():
         self.scan_data = dato  
 
     def find_closest_obstacle(self, fov_degrees: float, dead_zone_degrees: float) -> Obstacle:
+            obstaculo = Obstacle()
+            # Mantenemos 0.0 para que tu lógica de movimiento "else" no cambie
+            obstaculo.distance = 0.0 
 
-        obstaculo = Obstacle()
+            if self.scan_data is None:
+                return obstaculo
 
-        if self.scan_data is None:
-            return obstaculo
-
-        lidar_ranges = np.array(self.scan_data.ranges)
-        num_points = len(lidar_ranges)
-        angle_increment = self.scan_data.angle_increment
-        
-        points_per_side = int(fov_degrees / np.degrees(angle_increment))
-        dead_points = int(dead_zone_degrees / np.degrees(angle_increment))
-        
-        # Indices frontales: [0 a points_per_side] y [num_points - points_per_side a num_points - 1]
-        front_indices = np.concatenate([
-            np.arange(points_per_side), 
-            np.arange(num_points - points_per_side, num_points)
-        ])
-        
-        # Indices de la zona muerta a excluir
-        dead_zone_indices = np.concatenate([
-            np.arange(dead_points), 
-            np.arange(num_points - dead_points, num_points)
-        ])
-        
-        # Indices de búsqueda: FOV frontal, excluyendo la zona muerta
-        search_indices = np.setdiff1d(front_indices, dead_zone_indices)         #Excluye los indices repetidos
-        
-        if search_indices.size == 0:
-            return obstaculo
-
-        # 2. Encontrar la distancia mínima
-        # Reemplazar np.inf y valores fuera de rango por un valor grande para la comparación
-        lidar_search_values = lidar_ranges[search_indices].copy()
-        
-        # Asegurarse de que los valores inválidos (inf, nan) no causen problemas
-        lidar_search_values[~np.isfinite(lidar_search_values)] = 100.0 
-
-        min_distance = np.min(lidar_search_values)
-
-        # 3. Calcular el ángulo del obstáculo más cercano
-        if min_distance > 0.0 and min_distance < dist_peligrosa + 0.5: # Considerar distancias razonables
+            lidar_ranges = np.array(self.scan_data.ranges)
+            num_points = len(lidar_ranges)
+            angle_increment = self.scan_data.angle_increment
             
-            min_index_relative = np.argmin(lidar_search_values)
-            min_index_absolute = search_indices[min_index_relative]
+            points_per_side = int(fov_degrees / np.degrees(angle_increment))
+            dead_points = int(dead_zone_degrees / np.degrees(angle_increment))
             
-            # Mapeo de índice a ángulo en radianes
-            # El ángulo 0 es al frente. Indices crecientes (0->180) son Izquierda (positivo).
-            if min_index_absolute < num_points / 2:
-                # Ángulo positivo (izquierda)
-                angle_degrees = min_index_absolute
-            else:
-                # Ángulo negativo (derecha)
-                angle_degrees = min_index_absolute - num_points
+            front_indices = np.concatenate([
+                np.arange(points_per_side), 
+                np.arange(num_points - points_per_side, num_points)
+            ])
+            
+            dead_zone_indices = np.concatenate([
+                np.arange(dead_points), 
+                np.arange(num_points - dead_points, num_points)
+            ])
+            
+            search_indices = np.setdiff1d(front_indices, dead_zone_indices)
+            
+            if search_indices.size == 0:
+                return obstaculo
+
+            lidar_search_values = lidar_ranges[search_indices].copy()
+            
+            # EL CAMBIO CLAVE: El robot físico da muchos 0.0 e Inf. 
+            # Si dejamos los 0.0, min() siempre será 0.0 y nunca entrará en tu "if colision.distance > 0.0"
+            # Convertimos lo que NO es un obstáculo en un número muy grande
+            lidar_search_values[~np.isfinite(lidar_search_values)] = 100.0
+            lidar_search_values[lidar_search_values < 0.12] = 100.0 # Ignorar ceros y ruido cercano
+
+            min_distance = np.min(lidar_search_values)
+
+            # Solo si el mínimo encontrado es un obstáculo real (menos de 100m)
+            if min_distance < 100.0:
+                min_index_relative = np.argmin(lidar_search_values)
+                min_index_absolute = search_indices[min_index_relative]
                 
-            obstaculo.angle = np.radians(angle_degrees)
-            obstaculo.distance = min_distance
-            
-        return obstaculo
+                if min_index_absolute < num_points / 2:
+                    angle_rad = min_index_absolute * angle_increment
+                else:
+                    angle_rad = (min_index_absolute - num_points) * angle_increment
+                    
+                # Ahora obstaculo.distance será > 0.0 y tu IF de control sí lo detectará
+                obstaculo.angle = angle_rad
+                obstaculo.distance = min_distance
+                
+            return obstaculo
            
         
     def goalReached(self):
