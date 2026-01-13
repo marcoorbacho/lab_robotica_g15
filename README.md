@@ -1,6 +1,4 @@
 # lab_robotica_g15
-# Autonomous Navigation & Obstacle Avoidance - TurtleBot3
-
 Este paquete (`autonomous_navigation`) implementa un sistema de navegación autónoma reactiva para el robot TurtleBot3. El nodo principal permite al robot alcanzar objetivos de navegación (*goals*) en un entorno global, implementando un control proporcional y una estrategia de evasión de obstáculos basada en datos de LIDAR.
 
 ## 1. Estructura del Código
