@@ -1,0 +1,6 @@
+Goals reached: True
+Elapsed time: 73.213000
+Traveled distance: 19.487838
+Min distance to obstacles: 0.135448
+Avg distance to obstacles: 0.340000
+Collision penalties: 0

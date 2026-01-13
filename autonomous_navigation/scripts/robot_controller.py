@@ -10,20 +10,15 @@ from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PointStamped
 import numpy as np
 
-angulo_seg_delantero = 40
-dist_peligrosa = 0.7 
+angulo_seg_delantero = 45
+dist_peligrosa = 0.75 
 zona_muerta = 5
 
 # Constantes de Control Proporcional
-# Kp para el giro hacia el objetivo 
 obj_kp = 3.0 
-#kp para el frenado del objetivo
 dist_kp=0.8
-# Velocidad lineal máxima de avance 
 max_linear_speed = 0.7 
-# Velocidad angular máxima para giro 
 max_angular_speed = 1.2
-# Umbral de ángulo para considerar que estamos alineados (en radianes, ~3 grados)
 tolerancia_alineada = np.radians(10)
 
 class Obstacle:
@@ -41,10 +36,14 @@ class TurtlebotController():
 
         #parametros cooldown evasion
         self.cooldown_activo=False
-        self.duracion_cooldown=0.35
+        self.duracion_cooldown=0.25
         self.cooldown_empezar=rospy.Time.now()
         self.evading_direction=0.0
         
+        self.last_move_time = rospy.Time.now() 
+        self.recovering_180 = False            
+        self.recovery_end_time = rospy.Time.now()
+
         self.rate = rate # Hz  (1/Hz = secs)
         
         # Initialize internal data 
@@ -57,7 +56,6 @@ class TurtlebotController():
         self.cmd_vel_pub = rospy.Publisher("cmd_vel", Twist, queue_size=10)
         rospy.Subscriber("move_base_simple/goal", PoseStamped, self.goalCallback)
 
-        # Subscriptor para el LIDAR
         self.scan_data = None
         rospy.Subscriber("scan", LaserScan, self.Datos_lidar)
 
@@ -65,11 +63,8 @@ class TurtlebotController():
         
 
     def shutdown(self):
-        # Stop turtlebot
         rospy.loginfo("Stop TurtleBot")
-        # A default Twist has linear.x of 0 and angular.z of 0.  So it'll stop TurtleBot
         self.cmd_vel_pub.publish(Twist())
-        # Sleep just makes sure TurtleBot receives the stop command prior to shutting down the script
         rospy.sleep(1)
 
 
@@ -78,135 +73,137 @@ class TurtlebotController():
         self.goal = goal  
         self.goal_received = True
         self.inicio=0
+        # Resetear temporizador al recibir nuevo goal
+        self.last_move_time = rospy.Time.now()
 
 
     def command(self):
 
-        # Check if we already received data
         if(self.goal_received == False):
-            rospy.loginfo("Goal not received. Waiting...")
+            rospy.loginfo_throttle(5, "Goal not received. Waiting...")
             return
 
         if(self.goal_received == True):
-            rospy.loginfo("Goal received!! Moving...")
             linear = 0.0
             angular = 0.0
-            # Moverse hacia el goal el orientación correcta
                 
             try:
                 self.goal.header.stamp = rospy.Time()
                 base_goal = self.tf_listener.transformPose('base_link', self.goal)
 
                 angle=math.atan2(base_goal.pose.position.y, base_goal.pose.position.x)
-
                 distancia = math.sqrt(base_goal.pose.position.x**2 + base_goal.pose.position.y**2)                
                 
-                #Extraer datos del lidar
                 colision = self.find_closest_obstacle(angulo_seg_delantero, zona_muerta)  
-                rospy.loginfo("Datos de obstaculo, %.2f, %.2f", colision.angle, colision.distance)
 
                 linear = 0.0
                 angular = 0.0   
+                current_time = rospy.Time.now()
 
+                # Lógica normal de movimiento
                 if self.cooldown_activo and (rospy.Time.now() - self.cooldown_empezar).to_sec() > self.duracion_cooldown:
-                    self.cooldown_activo = False # Termina el periodo de giro forzado
-                    rospy.loginfo("Cooldown de evasión terminado.")     
+                    self.cooldown_activo = False 
+                    rospy.loginfo("Cooldown de evasión terminado.")    
 
                 if self.inicio==0:
                     angular = obj_kp**2 * angle
                     linear= 0.0
-                    # Limitamos la velocidad angular
                     if abs(angle)<tolerancia_alineada:
                         self.inicio=1
-
+                        self.last_move_time = current_time 
+                        
                     angular = max(-max_angular_speed, min(max_angular_speed, angular))
 
                 else:
+                    # Bloque de evasión de obstáculos
                     if colision.distance>0.0 and colision.distance<dist_peligrosa and colision.distance < distancia:
                         if not self.cooldown_activo:
-                            # Guardar la dirección de giro que se ha decidido (derecha o izquierda)
                             self.evading_direction = -1.0 if colision.angle >= 0.0 else 1.0
                             self.cooldown_activo = True
                             self.cooldown_empezar = rospy.Time.now()
 
-                            # Factor Proporcional basado en la distancia (más cerca = factor mayor)
-                            # Usamos una función inversa suave para evitar divisiones por cero y límites bruscos
                             safety_factor = max(0.0, (dist_peligrosa - colision.distance) / dist_peligrosa)
                             turn_direction = -1.0 if colision.angle >= 0.0 else 1.0
                         
-                            # Velocidad angular de evasión, limitada por la velocidad máxima
                             angular = turn_direction * safety_factor * max_angular_speed
                             angular = max(-max_angular_speed, min(max_angular_speed, angular))
 
-                            # Reducción de la velocidad lineal para maniobras seguras
-                            # Si está muy cerca (menor que dist_peligrosa), la velocidad es muy baja
-                            linear = min(max_linear_speed, (colision.distance) * max_linear_speed)
+                            linear = min(max_linear_speed, (colision.distance)*3/4 * max_linear_speed)
 
-                            if linear < 0.1:
-                                linear = 0.0  # Detenerse si está demasiado cerca
+                            if linear < 0.15:
+                                linear = 0.0 
 
                         elif self.cooldown_activo:
-                            rospy.loginfo("Cooldown de evasión activo: Giro sostenido.")
-                            # Fuerza al robot a continuar el giro en la última dirección determinada
-                            
-                            # Velocidad angular constante para un giro rápido y sostenido
-                            angular = self.evading_direction * max_angular_speed 
-                            
-                            # Permite un avance lento mientras gira
-                            linear = min(max_linear_speed, (colision.distance)/2 * max_linear_speed)
+                            rospy.loginfo_throttle(1, "Cooldown de evasión activo...")
+                            angular = self.evading_direction * max_angular_speed*3/4
+                            linear = min(max_linear_speed, (colision.distance)*3/4 * max_linear_speed)
+
+                            if linear < 0.15:
+                                linear = 0.0 
                     else:
-                        # Girar si el ángulo al objetivo es grande
-                        # Usamos control P para que el giro sea más suave cerca del objetivo (angle -> 0)
+                        # Navegación normal hacia el objetivo
                         angular = obj_kp * angle 
-                        # Limitamos la velocidad angular
                         angular = max(-max_angular_speed, min(max_angular_speed, angular))
-                        linear=max_linear_speed * distancia
-                        linear = max(max_linear_speed, linear)
-                        # Si el robot está razonablemente alineado, avanzamos
-                        if abs(angle) < 0.1: # umbral de 0.1 radianes
-                                # Kp * distancia para frenado proporcional
+                        linear=max_linear_speed
+                        linear = max(max_linear_speed*3/4, linear)
+                        if abs(angle) < 0.1: 
                             angular =0.0
-                        # Saturación
                         else:
-                            # Reducimos la velocidad lineal para dar prioridad al giro de realineación
                             linear = max_linear_speed/2
 
+                        if colision.distance > distancia:
+                            linear = min(linear, (colision.distance)*1.5 * max_linear_speed)
 
-                #Mandar velocidades
+
+                if self.recovering_180:
+                    if current_time < self.recovery_end_time:
+                        # Sobrescribimos cualquier comando anterior
+                        linear = 0.0
+                        angular = max_angular_speed 
+                        rospy.logwarn_throttle(1, "Recuperación: Girando 180 grados...")
+                    else:
+                        # Se acabó el tiempo de giro
+                        self.recovering_180 = False
+                        self.last_move_time = current_time 
+                        self.inicio = 0 
+                        rospy.loginfo("Recuperación terminada. Volviendo a control normal.")
+
+                else:
+                    is_active = (linear > 0.05) or (self.inicio == 0)
+
+                    if is_active:
+                        self.last_move_time = current_time
+                    else:
+                        # Solo contamos tiempo si NO estamos activos (ni moviéndonos ni alineándonos)
+                        time_stopped = (current_time - self.last_move_time).to_sec()
+                        
+                        if time_stopped > 3.0: 
+                            self.recovering_180 = True
+                            turn_duration = math.pi / max_angular_speed
+                            self.recovery_end_time = current_time + rospy.Duration(turn_duration)
+                            rospy.logwarn("¡ATASCO DETECTADO! Iniciando maniobra de 180º.")
+                
+
+                # Mandar velocidades
                 self.publish(linear,angular)
 
             except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
                 rospy.loginfo("Problem TF")
                 return False
 
-        # Check if the final goal has been reached
         if(self.goalReached()==True):
             rospy.loginfo("GOAL REACHED!!! Stopping!")
             self.publish(0.0, 0.0)
             self.goal_received = False
             self.inicio=0
             return
-        return 
+        return
         
-        #######################################################################################################
-        # Check for collisions                                                                                #
-        # Implement control law                                                                               #
-        # Note: You could transform next goal to local robot coordinates to compute control law more easily   #
-        # Note: You should saturate the maximum angular and linear robot velocities                           #
-        #######################################################################################################
-            
-        # Publish velocity command
-        self.publish(linear,angular)
-        return False
-    
-
-    # Recoger datos del LIDAR
     def Datos_lidar(self, dato):
         self.scan_data = dato  
 
     def find_closest_obstacle(self, fov_degrees: float, dead_zone_degrees: float) -> Obstacle:
             obstaculo = Obstacle()
-            # Mantenemos 0.0 para que tu lógica de movimiento "else" no cambie
             obstaculo.distance = 0.0 
 
             if self.scan_data is None:
@@ -235,16 +232,11 @@ class TurtlebotController():
                 return obstaculo
 
             lidar_search_values = lidar_ranges[search_indices].copy()
-            
-            # EL CAMBIO CLAVE: El robot físico da muchos 0.0 e Inf. 
-            # Si dejamos los 0.0, min() siempre será 0.0 y nunca entrará en tu "if colision.distance > 0.0"
-            # Convertimos lo que NO es un obstáculo en un número muy grande
             lidar_search_values[~np.isfinite(lidar_search_values)] = 100.0
-            lidar_search_values[lidar_search_values < 0.12] = 100.0 # Ignorar ceros y ruido cercano
+            lidar_search_values[lidar_search_values < 0.12] = 100.0 
 
             min_distance = np.min(lidar_search_values)
 
-            # Solo si el mínimo encontrado es un obstáculo real (menos de 100m)
             if min_distance < 100.0:
                 min_index_relative = np.argmin(lidar_search_values)
                 min_index_absolute = search_indices[min_index_relative]
@@ -254,7 +246,6 @@ class TurtlebotController():
                 else:
                     angle_rad = (min_index_absolute - num_points) * angle_increment
                     
-                # Ahora obstaculo.distance será > 0.0 y tu IF de control sí lo detectará
                 obstaculo.angle = angle_rad
                 obstaculo.distance = min_distance
                 
@@ -262,12 +253,8 @@ class TurtlebotController():
            
         
     def goalReached(self):
-        # Return True if the FINAL goal was reached, False otherwise
-
         if self.goal_received:
             pose_transformed = PoseStamped()
-
-            # Update the goal timestamp to avoid issues with TF transform
             self.goal.header.stamp = rospy.Time()
 
             try:
@@ -284,38 +271,19 @@ class TurtlebotController():
 
     
     def publish(self, lin_vel, ang_vel):
-        # Twist is a datatype for velocity
         move_cmd = Twist()
-        # Copy the forward velocity
         move_cmd.linear.x = lin_vel
-        # Copy the angular velocity
         move_cmd.angular.z = ang_vel
-        rospy.loginfo("Commanding lv: %.2f, av: %.2f", lin_vel, ang_vel)
         self.cmd_vel_pub.publish(move_cmd)
 
 
 if __name__ == '__main__':
-    
-    # Initiliaze
     rospy.init_node('TurtlebotController', anonymous=False)
-
-    # Tell user how to stop TurtleBot
     rospy.loginfo("To stop TurtleBot CTRL + C")
-
-    rate = 10 # Frecuency (Hz) for commanding the robot
+    rate = 10 
     robot = TurtlebotController(rate)
-        
-    # What function to call when you CTRL + C    
     rospy.on_shutdown(robot.shutdown)
-        
-    # TurtleBot will stop if we don't keep telling it to move.  How often should we tell it to move? 10 HZ
     r = rospy.Rate(rate)
-        
-    # As long as you haven't CTRL + C keeping doing...
     while not (rospy.is_shutdown()):
-        
-	    # Publish the velocity
         robot.command()
-
-        # Wait for 0.1 seconds (10 HZ) and publish again
         r.sleep()

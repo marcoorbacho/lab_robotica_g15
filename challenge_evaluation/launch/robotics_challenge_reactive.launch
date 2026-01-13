@@ -21,6 +21,7 @@
        
 	<!-- Launch the reactive robot controller from autonomous_navigation package -->
     <!-- TO BE COMPLETED -->
+    <node name="TurtlebotController" pkg="autonomous_navigation" type="robot_controller.py" output="screen"/>
 
 </launch>
 
